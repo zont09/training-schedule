@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #FAF5FF;
+    --foreground: #4C1D95;
+    
+    /* ShadCN core variables mapping */
+    --popover: #FFFFFF;
+    --popover-foreground: #4C1D95;
+    --muted: #E2E8F0;
+    --muted-foreground: #64748B;
+    
+    --card: #FFFFFF;
+    --card-foreground: #4C1D95;
+    
+    --border: #E2E8F0;
+    --input: #E2E8F0;
+    
+    --primary: #7C3AED;
+    --primary-foreground: #FFFFFF;
+    
+    --secondary: #A78BFA;
+    --secondary-foreground: #4C1D95;
+    
+    --accent: #F97316;
+    --accent-foreground: #FFFFFF;
+    
+    --destructive: #EF4444;
+    --destructive-foreground: #FFFFFF;
+
+    --ring: #A78BFA;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-[var(--background)] text-[var(--foreground)] font-sans antialiased;
+  }
+}
