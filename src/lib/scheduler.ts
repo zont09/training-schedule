@@ -101,7 +101,7 @@ export function runScheduler(
     return {
       sessions: [],
       unscheduled: [],
-      stats: { totalSessions: 0, avgGroupSize: 0, totalTraineeDays: 0, completionRate: 0 },
+      stats: { totalSessions: 0, avgGroupSize: 0, totalTraineeDays: 0, completionRate: 0, peakConcurrent: 0 },
     };
   }
 

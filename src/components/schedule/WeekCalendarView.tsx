@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useScheduleStore, ScheduledSession } from '@/store/useScheduleStore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { CalendarDays, ChevronLeft, ChevronRight, Users, Clock, ZoomIn, ZoomOut, Filter, Check } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Users, Clock, Filter } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
