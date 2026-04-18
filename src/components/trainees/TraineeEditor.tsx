@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Trash2, CheckCircle2, Circle, ChevronDown } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
 // Helper for days translation
@@ -70,11 +71,19 @@ export default function TraineeEditor({ open, onOpenChange, trainee }: TraineeEd
   };
 
   const addFreeSlot = (day: number) => {
+    let defaultStart = '09:00';
+    let defaultEnd = '12:00';
+    if (freeSlots.length > 0) {
+      const lastSlot = freeSlots[freeSlots.length - 1]; // Use time of the most recently added slot
+      defaultStart = lastSlot.startTime;
+      defaultEnd = lastSlot.endTime;
+    }
+
     setFreeSlots([...freeSlots, {
       id: crypto.randomUUID(),
       dayOfWeek: day as any,
-      startTime: '09:00',
-      endTime: '12:00'
+      startTime: defaultStart,
+      endTime: defaultEnd
     }]);
   };
 
@@ -107,28 +116,30 @@ export default function TraineeEditor({ open, onOpenChange, trainee }: TraineeEd
                         Chọn loại training <ChevronDown className="w-4 h-4 text-muted-foreground opacity-50" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[340px] p-2 bg-popover text-popover-foreground border-border shadow-md" align="start">
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground ml-2 mb-2 block">Multiselect: Tích chọn các loại training</Label>
-                        {trainingTypes.map(t => {
-                          const isSelected = sessions.some(s => s.trainingTypeId === t.id);
-                          return (
-                            <div 
-                              key={t.id} 
-                              className="flex items-center gap-3 p-2 hover:bg-muted/50 rounded-md transition-colors cursor-pointer"
-                              onClick={() => toggleSession(t.id)}
-                            >
-                              <Checkbox 
-                                checked={isSelected} 
-                                onCheckedChange={() => toggleSession(t.id)} 
-                                className="pointer-events-none" 
-                              />
-                              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{backgroundColor: t.color}}/>
-                              <span className="text-sm font-medium flex-1">{t.name}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
+                    <PopoverContent className="w-[340px] p-0 bg-popover text-popover-foreground border-border shadow-md" align="start">
+                      <ScrollArea className="h-[300px] w-full">
+                        <div className="p-2 space-y-1">
+                          <Label className="text-xs text-muted-foreground ml-2 mb-2 block">Multiselect: Tích chọn các loại training</Label>
+                          {trainingTypes.map(t => {
+                            const isSelected = sessions.some(s => s.trainingTypeId === t.id);
+                            return (
+                              <div 
+                                key={t.id} 
+                                className="flex items-center gap-3 p-2 hover:bg-muted/50 rounded-md transition-colors cursor-pointer"
+                                onClick={() => toggleSession(t.id)}
+                              >
+                                <Checkbox 
+                                  checked={isSelected} 
+                                  onCheckedChange={() => toggleSession(t.id)} 
+                                  className="pointer-events-none" 
+                                />
+                                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{backgroundColor: t.color}}/>
+                                <span className="text-sm font-medium flex-1">{t.name}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </ScrollArea>
                     </PopoverContent>
                   </Popover>
                 </div>

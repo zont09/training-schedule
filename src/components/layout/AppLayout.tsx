@@ -14,8 +14,9 @@ export default function AppLayout() {
     <div className="h-screen overflow-hidden bg-background flex">
       {/* Sidebar */}
       <aside className="w-64 h-full bg-card border-r border-border flex flex-col flex-shrink-0">
-        <div className="p-6">
-          <h1 className="text-2xl font-bold tracking-tight text-primary">Schedule<span className="text-accent">MVP</span></h1>
+        <div className="p-6 flex items-center gap-3 text-primary">
+          <img src="/logo.svg" alt="Logo" className="w-8 h-8" />
+          <h1 className="text-2xl font-bold tracking-tight">Z <span className="text-foreground">Schedule</span></h1>
         </div>
         <nav className="flex-1 overflow-y-auto px-4 space-y-2">
           {navItems.map((item) => (

@@ -40,6 +40,7 @@ export interface WeekConfig {
   id: string;
   name: string;
   days: DayConfig[];
+  maxConcurrentSessions: number; // C7: max sessions running at the same time (≥ 1)
 }
 
 export interface ScheduledSession {
@@ -81,6 +82,7 @@ interface ScheduleState {
 const defaultWeekConfig: WeekConfig = {
   id: 'default',
   name: 'Tuần mặc định',
+  maxConcurrentSessions: 3,
   days: [
     { dayOfWeek: 1, enabled: true, slots: [{ start: "09:00", end: "21:00" }] },
     { dayOfWeek: 2, enabled: true, slots: [{ start: "09:00", end: "21:00" }] },

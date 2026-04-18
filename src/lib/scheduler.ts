@@ -72,7 +72,7 @@ export interface UnscheduledEntry {
   traineeId: string;
   trainingTypeId: string;
   order: number;
-  reason: 'no_slot' | 'config_error';
+  reason: 'no_slot' | 'config_error' | 'concurrent_limit';
 }
 
 export interface ScheduleResult {
@@ -83,6 +83,7 @@ export interface ScheduleResult {
     avgGroupSize: number;
     totalTraineeDays: number;
     completionRate: number; // 0-100 as integer
+    peakConcurrent: number; // C7: highest concurrent sessions observed
   };
 }
 
@@ -130,7 +131,11 @@ export function runScheduler(
   trainees.forEach((t) => takenDates.set(t.id, new Set()));
 
   // C6: date → list of booked [startMins, endMins] intervals (no overlap allowed globally)
+  // Also used for C7 concurrent count
   const bookedIntervals = new Map<string, { start: number; end: number }[]>();
+
+  // C7: max concurrent sessions from config (fallback to unlimited if not set)
+  const maxConcurrent = weekConfig.maxConcurrentSessions ?? Infinity;
 
   // NEW: per-trainee minimum date for next session — ensures type-order is reflected in dates
   // After scheduling a session for trainee in type order k, their next session (order k+1)
@@ -138,9 +143,10 @@ export function runScheduler(
   const traineeMinNextDate = new Map<string, string>();
   trainees.forEach((t) => traineeMinNextDate.set(t.id, ''));
 
-  function isIntervalFree(date: string, start: number, end: number): boolean {
+  /** Count how many already-scheduled sessions overlap with [start, end] on this date (C7) */
+  function countConcurrent(date: string, start: number, end: number): number {
     const intervals = bookedIntervals.get(date) ?? [];
-    return !intervals.some((iv) => start < iv.end && end > iv.start);
+    return intervals.filter((iv) => start < iv.end && end > iv.start).length;
   }
 
   function bookInterval(date: string, start: number, end: number) {
@@ -211,62 +217,67 @@ export function runScheduler(
           if (group.trainees.some((tid) => takenDates.get(tid)?.has(day.date))) continue;
 
           // DATE ORDER: This day must be AFTER the last scheduled day for all trainees in group
-          // (ensures training type order is reflected in actual session dates per trainee)
           if (group.trainees.some((tid) => {
             const minDate = traineeMinNextDate.get(tid) ?? '';
             return minDate !== '' && day.date <= minDate;
           })) continue;
 
+          // Collect ALL valid candidate slots in this day, then pick the best one
+          const candidates: { sessionStart: number; sessionEnd: number; concurrent: number }[] = [];
+
           for (const slot of day.slots) {
             const slotStart = timeToMins(slot.start);
             const slotEnd = timeToMins(slot.end);
-
             // C3: session must fit inside this slot
             if (slotEnd - slotStart < tType.duration) continue;
 
-            // Iterate start times within slot in 30-min steps to find a common window
             const step = 30;
-            let slotAssigned = false;
-            for (let t = slotStart; t + tType.duration <= slotEnd && !slotAssigned; t += step) {
+            for (let t = slotStart; t + tType.duration <= slotEnd; t += step) {
               const sessionStart = t;
               const sessionEnd = t + tType.duration;
 
-              // C5: All trainees must be free during [sessionStart, sessionEnd]
+              // C5: All trainees must be free
               const allFree = group.trainees.every((tid) => {
                 const trainee = trainees.find((tr) => tr.id === tid)!;
                 return isFreeAt(trainee, day.dayOfWeek, sessionStart, sessionEnd);
               });
-
               if (!allFree) continue;
 
-              // C6: The time interval must not overlap any existing session on this date
-              if (!isIntervalFree(day.date, sessionStart, sessionEnd)) continue;
+              // C7: concurrent limit (C6 removed — overlap is now allowed up to maxConcurrent)
+              const concurrent = countConcurrent(day.date, sessionStart, sessionEnd);
+              if (concurrent >= maxConcurrent) continue;
 
-              // ✅ Assign
-              scheduledSessions.push({
-                id: crypto.randomUUID(),
-                date: day.date,
-                startTime: minsToTime(sessionStart),
-                endTime: minsToTime(sessionEnd),
-                trainingTypeId: tType.id,
-                trainingOrder: order,
-                traineeIds: [...group.trainees],
-                status: 'scheduled',
-              });
-
-              group.trainees.forEach((tid) => {
-                takenDates.get(tid)!.add(day.date);
-                // Update min-next-date so later training types land on a later date
-                const current = traineeMinNextDate.get(tid) ?? '';
-                if (day.date >= current) traineeMinNextDate.set(tid, day.date);
-              });
-              bookInterval(day.date, sessionStart, sessionEnd);
-              assigned = true;
-              slotAssigned = true;
+              candidates.push({ sessionStart, sessionEnd, concurrent });
             }
-
-            if (assigned) break outer;
           }
+
+          if (candidates.length === 0) continue;
+
+          // Prefer slots with MORE existing overlap (minimizes total wall-clock time)
+          // Tiebreak: earlier start time
+          candidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
+          const best = candidates[0];
+
+          // ✅ Assign
+          scheduledSessions.push({
+            id: crypto.randomUUID(),
+            date: day.date,
+            startTime: minsToTime(best.sessionStart),
+            endTime: minsToTime(best.sessionEnd),
+            trainingTypeId: tType.id,
+            trainingOrder: order,
+            traineeIds: [...group.trainees],
+            status: 'scheduled',
+          });
+
+          group.trainees.forEach((tid) => {
+            takenDates.get(tid)!.add(day.date);
+            const current = traineeMinNextDate.get(tid) ?? '';
+            if (day.date >= current) traineeMinNextDate.set(tid, day.date);
+          });
+          bookInterval(day.date, best.sessionStart, best.sessionEnd);
+          assigned = true;
+          break outer;
         }
 
         if (!assigned) {
@@ -277,9 +288,11 @@ export function runScheduler(
             soloOuter: for (const day of timeline) {
               if (takenDates.get(tid)?.has(day.date)) continue;
 
-              // DATE ORDER: solo session also must be after trainee's last session date
               const minDate = traineeMinNextDate.get(tid) ?? '';
               if (minDate !== '' && day.date <= minDate) continue;
+
+              // Collect valid candidates for this day
+              const soloCandidates: { sessionStart: number; sessionEnd: number; concurrent: number }[] = [];
 
               for (const slot of day.slots) {
                 const slotStart = timeToMins(slot.start);
@@ -287,34 +300,44 @@ export function runScheduler(
                 if (slotEnd - slotStart < tType.duration) continue;
 
                 const step = 30;
-                for (let t = slotStart; t + tType.duration <= slotEnd && !soloAssigned; t += step) {
+                for (let t = slotStart; t + tType.duration <= slotEnd; t += step) {
                   const sessionStart = t;
                   const sessionEnd = t + tType.duration;
 
                   const trainee = trainees.find((tr) => tr.id === tid)!;
                   if (!isFreeAt(trainee, day.dayOfWeek, sessionStart, sessionEnd)) continue;
 
-                  // C6: global time overlap check for solo sessions too
-                  if (!isIntervalFree(day.date, sessionStart, sessionEnd)) continue;
+                  // C7: concurrent limit (C6 removed)
+                  const concurrent = countConcurrent(day.date, sessionStart, sessionEnd);
+                  if (concurrent >= maxConcurrent) continue;
 
-                  scheduledSessions.push({
-                    id: crypto.randomUUID(),
-                    date: day.date,
-                    startTime: minsToTime(sessionStart),
-                    endTime: minsToTime(sessionEnd),
-                    trainingTypeId: tType.id,
-                    trainingOrder: order,
-                    traineeIds: [tid],
-                    status: 'scheduled',
-                  });
-
-                  takenDates.get(tid)!.add(day.date);
-                  const current = traineeMinNextDate.get(tid) ?? '';
-                  if (day.date >= current) traineeMinNextDate.set(tid, day.date);
-                  bookInterval(day.date, sessionStart, sessionEnd);
-                  soloAssigned = true;
+                  soloCandidates.push({ sessionStart, sessionEnd, concurrent });
                 }
               }
+
+              if (soloCandidates.length === 0) continue;
+
+              // Prefer overlap-first to minimize total wall-clock time
+              soloCandidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
+              const best = soloCandidates[0];
+
+              scheduledSessions.push({
+                id: crypto.randomUUID(),
+                date: day.date,
+                startTime: minsToTime(best.sessionStart),
+                endTime: minsToTime(best.sessionEnd),
+                trainingTypeId: tType.id,
+                trainingOrder: order,
+                traineeIds: [tid],
+                status: 'scheduled',
+              });
+
+              takenDates.get(tid)!.add(day.date);
+              const current = traineeMinNextDate.get(tid) ?? '';
+              if (day.date >= current) traineeMinNextDate.set(tid, day.date);
+              bookInterval(day.date, best.sessionStart, best.sessionEnd);
+              soloAssigned = true;
+              break soloOuter;
             }
 
             if (!soloAssigned) {
@@ -345,9 +368,18 @@ export function runScheduler(
   const completionRate =
     totalPending > 0 ? Math.round(Math.min(scheduledCount / totalPending, 1) * 100) : 100;
 
+  // C7 stat: find the highest concurrent session count across all booked intervals
+  let peakConcurrent = 0;
+  for (const intervals of bookedIntervals.values()) {
+    for (const iv of intervals) {
+      const concurrent = intervals.filter((other) => iv.start < other.end && iv.end > other.start).length;
+      if (concurrent > peakConcurrent) peakConcurrent = concurrent;
+    }
+  }
+
   return {
     sessions: scheduledSessions,
     unscheduled,
-    stats: { totalSessions, avgGroupSize, totalTraineeDays, completionRate },
+    stats: { totalSessions, avgGroupSize, totalTraineeDays, completionRate, peakConcurrent },
   };
 }

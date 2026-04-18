@@ -45,12 +45,36 @@ export default function WeekConfigEditor() {
 
   if (!config) return null;
 
+  const handleMaxConcurrentChange = (val: string) => {
+    const n = parseInt(val, 10);
+    if (!isNaN(n) && n >= 1) {
+      updateWeekConfig(config.id, { maxConcurrentSessions: n });
+    }
+  };
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Khung Giờ Tuần: {config.name}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* C7: Max concurrent sessions setting */}
+        <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+          <div>
+            <p className="text-sm font-medium">Số ca tối đa đồng thời</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Tại một thời điểm bất kỳ, không quá x ca được diễn ra song song
+            </p>
+          </div>
+          <Input
+            type="number"
+            min={1}
+            max={20}
+            value={config.maxConcurrentSessions ?? 3}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleMaxConcurrentChange(e.target.value)}
+            className="w-20 h-9 text-center text-base font-semibold"
+          />
+        </div>
         {config.days.map((day, dayIndex) => {
           // day.dayOfWeek format (1=Mon, 7=Sun). Map it correctly:
           const label = day.dayOfWeek === 7 ? 'Chủ Nhật' : `Thứ ${day.dayOfWeek + 1}`;

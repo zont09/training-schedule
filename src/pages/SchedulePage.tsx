@@ -16,6 +16,7 @@ import {
   CalendarDays,
   Layers,
   TrendingUp,
+  Zap,
 } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
@@ -181,7 +182,7 @@ export default function SchedulePage() {
 
       {/* Stats row (shown after run) */}
       {result && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <StatCard
             icon={<CalendarDays className="w-5 h-5 text-primary" />}
             label="Tổng Ca Đã Xếp"
@@ -199,6 +200,12 @@ export default function SchedulePage() {
             label="Tỷ Lệ Hoàn Thành"
             value={`${result.stats.completionRate}%`}
             bg="bg-emerald-50"
+          />
+          <StatCard
+            icon={<Zap className="w-5 h-5 text-amber-500" />}
+            label="Đỉnh Ca Đồng Thời"
+            value={result.stats.peakConcurrent}
+            bg="bg-amber-50"
           />
           <StatCard
             icon={<AlertTriangle className="w-5 h-5 text-destructive" />}
@@ -230,7 +237,11 @@ export default function SchedulePage() {
                       <strong>{trainee?.name ?? u.traineeId}</strong> — {tType?.name ?? u.trainingTypeId} Ca {u.order}
                     </span>
                     <Badge variant="outline" className="text-[10px] border-destructive/40 text-destructive">
-                      {u.reason === 'no_slot' ? 'Không có slot khả dụng' : 'Lỗi cấu hình'}
+                      {u.reason === 'no_slot'
+                        ? 'Không có slot khả dụng'
+                        : u.reason === 'concurrent_limit'
+                        ? 'Vượt giới hạn ca đồng thời'
+                        : 'Lỗi cấu hình'}
                     </Badge>
                   </div>
                 );
