@@ -1,13 +1,14 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useScheduleStore, ScheduledSession } from '@/store/useScheduleStore';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { CalendarDays, ChevronLeft, ChevronRight, Users, Clock, Filter } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Users, Clock, Filter, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { cn } from '@/lib/utils';
 
 const DAY_LABELS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
 const START_HOUR = 8;
@@ -118,6 +119,7 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
   const [weekStart, setWeekStart] = useState(() => getMonday(startDate || new Date()));
   const [selectedSession, setSelectedSession] = useState<ScheduledSession | null>(null);
   const [minuteHeight, setMinuteHeight] = useState(DEFAULT_MIN_H);
+  const [copied, setCopied] = useState(false);
 
   // Filters
   const [selectedTrainees, setSelectedTrainees] = useState<string[]>([]);
@@ -190,6 +192,39 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
     const start = weekDates[0];
     const end = weekDates[6];
     return `${start.getDate()}/${start.getMonth() + 1} – ${end.getDate()}/${end.getMonth() + 1}/${end.getFullYear()}`;
+  };
+
+  const handleCopySchedule = () => {
+    if (selectedTrainees.length !== 1) return;
+    
+    const trainee = trainees.find(t => t.id === selectedTrainees[0]);
+    if (!trainee) return;
+
+    // Sort sessions by date and then by time
+    const sortedSessions = [...sessionsThisWeek].sort((a, b) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return getTimeOffset(a.startTime) - getTimeOffset(b.startTime);
+    });
+
+    const VN_DAYS = ['Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+    
+    const lines = [
+      `Team gửi lịch training tuần này cho @${trainee.name} nhé!`,
+      ...sortedSessions.map(sess => {
+        const d = new Date(sess.date + 'T00:00:00');
+        // Monday is index 0 in our weekDates/DAY_LABELS logic
+        const dayIdx = d.getDay() === 0 ? 6 : d.getDay() - 1;
+        const dayName = VN_DAYS[dayIdx];
+        const tType = trainingTypes.find(t => t.id === sess.trainingTypeId);
+        const timeDisplay = sess.startTime.replace(':', 'h');
+        return `${dayName} lúc ${timeDisplay}: ${tType?.name ?? 'Unknown'}`;
+      }),
+      `Mình xác nhận lịch trên nhé!`
+    ];
+
+    navigator.clipboard.writeText(lines.join('\n'));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   if (scheduledSessions.length === 0) {
@@ -314,6 +349,22 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
                   )}
                 </PopoverContent>
               </Popover>
+
+              {/* Phím tắt: Copy lịch học viên */}
+              {selectedTrainees.length === 1 && (
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className={cn(
+                    "h-8 gap-2 text-xs transition-all",
+                    copied ? "border-emerald-500 text-emerald-600 bg-emerald-50" : "border-primary/40 text-primary hover:bg-primary/5"
+                  )}
+                  onClick={handleCopySchedule}
+                >
+                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {copied ? 'Đã copy!' : 'Copy lịch'}
+                </Button>
+              )}
             </div>
           </div>
 
