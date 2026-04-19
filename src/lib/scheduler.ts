@@ -203,11 +203,12 @@ export function runScheduler(
 
       if (tierCompleted) break;
 
-      // Group trainees needing the same (typeId, reqOrder)
+      // Group trainees needing the same (typeId, reqOrder) — with SHARED availability check
       const currentIterGroups: Group[] = [];
       for (const [key, ids] of pendingUnits.entries()) {
         const [typeId, orderStr] = key.split('|');
         const order = parseInt(orderStr, 10);
+        const tType = trainingTypes.find((t) => t.id === typeId)!;
 
         // Sort by least free time first (hardest-to-schedule → pivot)
         const sorted = [...ids].sort((a, b) => {
@@ -218,12 +219,57 @@ export function runScheduler(
 
         const remaining = [...sorted];
         while (remaining.length > 0) {
-          const pivot = remaining.shift()!;
-          const group: string[] = [pivot];
+          const pivotId = remaining.shift()!;
+          const pivotTrainee = trainees.find((t) => t.id === pivotId)!;
+          const group: string[] = [pivotId];
+
+          // Build set of (dayOfWeek, startMins) windows where the pivot is free
+          // and can fit the training duration
+          const pivotWindows = new Set<string>();
+          for (const fs of pivotTrainee.freeSlots) {
+            const fsStart = timeToMins(fs.startTime);
+            const fsEnd = timeToMins(fs.endTime);
+            for (let t = fsStart; t + tType.duration <= fsEnd; t += 30) {
+              pivotWindows.add(`${fs.dayOfWeek}|${t}`);
+            }
+          }
 
           for (let i = 0; i < remaining.length && group.length < 4; ) {
-            group.push(remaining[i]);
-            remaining.splice(i, 1);
+            const candidateId = remaining[i];
+            const candidateTrainee = trainees.find((t) => t.id === candidateId)!;
+
+            // Check if candidate shares at least one common free window with entire group
+            let hasCommon = false;
+            for (const fs of candidateTrainee.freeSlots) {
+              const fsStart = timeToMins(fs.startTime);
+              const fsEnd = timeToMins(fs.endTime);
+              for (let t = fsStart; t + tType.duration <= fsEnd; t += 30) {
+                if (pivotWindows.has(`${fs.dayOfWeek}|${t}`)) {
+                  hasCommon = true;
+                  break;
+                }
+              }
+              if (hasCommon) break;
+            }
+
+            if (hasCommon) {
+              group.push(candidateId);
+              remaining.splice(i, 1);
+              // Narrow pivotWindows to intersection with candidate
+              const candidateWindows = new Set<string>();
+              for (const fs of candidateTrainee.freeSlots) {
+                const fsStart = timeToMins(fs.startTime);
+                const fsEnd = timeToMins(fs.endTime);
+                for (let t = fsStart; t + tType.duration <= fsEnd; t += 30) {
+                  candidateWindows.add(`${fs.dayOfWeek}|${t}`);
+                }
+              }
+              for (const w of pivotWindows) {
+                if (!candidateWindows.has(w)) pivotWindows.delete(w);
+              }
+            } else {
+              i++;
+            }
           }
 
           currentIterGroups.push({ trainees: group, trainingTypeId: typeId, order });
@@ -241,6 +287,52 @@ export function runScheduler(
       // ── Slot assignment ────────────────────────────────────────────
       for (const group of currentIterGroups) {
         const tType = trainingTypes.find((t) => t.id === group.trainingTypeId)!;
+
+        // First, try to merge into an already-scheduled session for the same (typeId, order)
+        // that has room (< 4 trainees) and all group trainees are free at that time
+        let merged = false;
+        for (const existing of scheduledSessions) {
+          if (
+            existing.trainingTypeId !== tType.id ||
+            existing.trainingOrder !== group.order ||
+            existing.traineeIds.length + group.trainees.length > 4
+          ) continue;
+
+          const exDate = existing.date;
+          const exDay = timeline.find((d) => d.date === exDate);
+          if (!exDay) continue;
+
+          const exStart = timeToMins(existing.startTime);
+          const exEnd = timeToMins(existing.endTime);
+
+          // Check all group trainees can attend this existing session
+          const canMerge = group.trainees.every((tid) => {
+            if (takenDates.get(tid)?.has(exDate)) return false;
+            const minTier = traineeTierMinDate.get(tid) ?? '';
+            if (minTier !== '' && exDate < minTier) return false;
+            const minType = traineeTypeMinDate.get(tid)?.get(tType.id) ?? '';
+            if (minType !== '' && exDate <= minType) return false;
+            const trainee = trainees.find((tr) => tr.id === tid)!;
+            return isFreeAt(trainee, exDay.dayOfWeek, exStart, exEnd);
+          });
+
+          if (canMerge) {
+            // Merge trainees into existing session
+            existing.traineeIds.push(...group.trainees);
+            group.trainees.forEach((tid) => {
+              takenDates.get(tid)!.add(exDate);
+              traineeTypeMinDate.get(tid)!.set(tType.id, exDate);
+              scheduledInThisTier.add(`${tid}|${tType.id}|${group.order}`);
+              const currMax = traineeCurrentTierMaxDate.get(tid) ?? '';
+              if (exDate > currMax) traineeCurrentTierMaxDate.set(tid, exDate);
+            });
+            merged = true;
+            break;
+          }
+        }
+
+        if (merged) continue;
+
         let assigned = false;
 
         outer: for (const day of timeline) {
@@ -285,7 +377,8 @@ export function runScheduler(
 
           if (candidates.length === 0) continue;
 
-          candidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
+          // Prefer LESS concurrent (safer from limit), then earlier start time
+          candidates.sort((a, b) => a.concurrent - b.concurrent || a.sessionStart - b.sessionStart);
           const best = candidates[0];
 
           // ✅ Assign
@@ -316,9 +409,43 @@ export function runScheduler(
         }
 
         if (!assigned) {
-          // Fallback: Try to split group into solo sessions
+          // Fallback: Try to merge each trainee into existing sessions, then solo
           for (const tid of group.trainees) {
             let soloAssigned = false;
+
+            // Try merging into existing session first
+            for (const existing of scheduledSessions) {
+              if (
+                existing.trainingTypeId !== tType.id ||
+                existing.trainingOrder !== group.order ||
+                existing.traineeIds.length >= 4
+              ) continue;
+
+              const exDate = existing.date;
+              const exDay = timeline.find((d) => d.date === exDate);
+              if (!exDay) continue;
+              if (takenDates.get(tid)?.has(exDate)) continue;
+              const minTier = traineeTierMinDate.get(tid) ?? '';
+              if (minTier !== '' && exDate < minTier) continue;
+              const minType = traineeTypeMinDate.get(tid)?.get(tType.id) ?? '';
+              if (minType !== '' && exDate <= minType) continue;
+
+              const exStart = timeToMins(existing.startTime);
+              const exEnd = timeToMins(existing.endTime);
+              const trainee = trainees.find((tr) => tr.id === tid)!;
+              if (isFreeAt(trainee, exDay.dayOfWeek, exStart, exEnd)) {
+                existing.traineeIds.push(tid);
+                takenDates.get(tid)!.add(exDate);
+                traineeTypeMinDate.get(tid)!.set(tType.id, exDate);
+                scheduledInThisTier.add(`${tid}|${tType.id}|${group.order}`);
+                const currMax = traineeCurrentTierMaxDate.get(tid) ?? '';
+                if (exDate > currMax) traineeCurrentTierMaxDate.set(tid, exDate);
+                soloAssigned = true;
+                break;
+              }
+            }
+
+            if (soloAssigned) continue;
 
             soloOuter: for (const day of timeline) {
               if (takenDates.get(tid)?.has(day.date)) continue;
@@ -351,7 +478,8 @@ export function runScheduler(
 
               if (soloCandidates.length === 0) continue;
 
-              soloCandidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
+              // Prefer less concurrent, then earlier start
+              soloCandidates.sort((a, b) => a.concurrent - b.concurrent || a.sessionStart - b.sessionStart);
               const best = soloCandidates[0];
 
               scheduledSessions.push({
