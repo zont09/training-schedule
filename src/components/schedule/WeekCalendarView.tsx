@@ -120,6 +120,7 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
   const [selectedSession, setSelectedSession] = useState<ScheduledSession | null>(null);
   const [minuteHeight, setMinuteHeight] = useState(DEFAULT_MIN_H);
   const [copied, setCopied] = useState(false);
+  const [includeDateInCopy, setIncludeDateInCopy] = useState(false);
 
   // Filters
   const [selectedTrainees, setSelectedTrainees] = useState<string[]>([]);
@@ -212,12 +213,12 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
       `Team gửi lịch training tuần này cho @${trainee.name} nhé!`,
       ...sortedSessions.map(sess => {
         const d = new Date(sess.date + 'T00:00:00');
-        // Monday is index 0 in our weekDates/DAY_LABELS logic
         const dayIdx = d.getDay() === 0 ? 6 : d.getDay() - 1;
         const dayName = VN_DAYS[dayIdx];
+        const dateStr = includeDateInCopy ? ` ngày ${d.getDate()}/${d.getMonth() + 1}` : '';
         const tType = trainingTypes.find(t => t.id === sess.trainingTypeId);
         const timeDisplay = sess.startTime.replace(':', 'h');
-        return `${dayName} lúc ${timeDisplay}: ${tType?.name ?? 'Unknown'}`;
+        return `${dayName}${dateStr} lúc ${timeDisplay}: ${tType?.name ?? 'Unknown'}`;
       }),
       `Mình xác nhận lịch trên nhé!`
     ];
@@ -322,7 +323,7 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
                   </div>
                   <ScrollArea className="h-48">
                     <div className="p-2 space-y-1">
-                      {trainees.map((t) => (
+                      {[...trainees].sort((a, b) => a.name.localeCompare(b.name)).map((t) => (
                         <div key={t.id} className="flex items-center space-x-2 rounded-sm px-2 py-1.5 hover:bg-muted/50">
                           <Checkbox 
                             id={`fs-${t.id}`} 
@@ -352,18 +353,29 @@ export default function WeekCalendarView({ startDate }: { startDate?: Date }) {
 
               {/* Phím tắt: Copy lịch học viên */}
               {selectedTrainees.length === 1 && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className={cn(
-                    "h-8 gap-2 text-xs transition-all",
-                    copied ? "border-emerald-500 text-emerald-600 bg-emerald-50" : "border-primary/40 text-primary hover:bg-primary/5"
-                  )}
-                  onClick={handleCopySchedule}
-                >
-                  {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                  {copied ? 'Đã copy!' : 'Copy lịch'}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 bg-muted/30 px-2 py-1 rounded-md border h-8 transition-colors hover:bg-muted/50">
+                    <Checkbox 
+                      id="include-date-copy" 
+                      checked={includeDateInCopy}
+                      onCheckedChange={(v) => setIncludeDateInCopy(!!v)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <label htmlFor="include-date-copy" className="text-[10px] font-medium cursor-pointer select-none">Ngày</label>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className={cn(
+                      "h-8 gap-2 text-xs transition-all",
+                      copied ? "border-emerald-500 text-emerald-600 bg-emerald-50" : "border-primary/40 text-primary hover:bg-primary/5"
+                    )}
+                    onClick={handleCopySchedule}
+                  >
+                    {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    {copied ? 'Đã copy!' : 'Copy lịch'}
+                  </Button>
+                </div>
               )}
             </div>
           </div>
