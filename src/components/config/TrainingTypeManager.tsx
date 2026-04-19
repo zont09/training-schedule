@@ -80,7 +80,12 @@ function SortableTableRow({
 export default function TrainingTypeManager() {
   const { trainingTypes, addTrainingType, updateTrainingType, deleteTrainingType, setTrainingTypes } = useScheduleStore();
   
-  const [form, setForm] = useState({ name: '', duration: 60 as string | number, color: '#7C3AED' });
+  const [form, setForm] = useState({ 
+    name: '', 
+    duration: 60 as string | number, 
+    color: '#7C3AED',
+    order: 1 as string | number
+  });
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -94,12 +99,11 @@ export default function TrainingTypeManager() {
     if (!form.name.trim()) return;
     
     if (editingId) {
-      const type = trainingTypes.find(t => t.id === editingId);
       updateTrainingType(editingId, {
         name: form.name,
         duration: Number(form.duration) || 60,
         color: form.color,
-        order: type ? type.order : 1
+        order: Number(form.order) || 1
       });
       setEditingId(null);
     } else {
@@ -107,41 +111,70 @@ export default function TrainingTypeManager() {
         id: crypto.randomUUID(),
         name: form.name,
         duration: Number(form.duration) || 60,
-        order: trainingTypes.length > 0 ? Math.max(...trainingTypes.map(t => t.order)) + 1 : 1,
+        order: Number(form.order) || (trainingTypes.length > 0 ? Math.max(...trainingTypes.map(t => t.order)) + 1 : 1),
         color: form.color
       });
     }
-    setForm({ name: '', duration: 60, color: '#7C3AED' });
+    setForm({ name: '', duration: 60, color: '#7C3AED', order: trainingTypes.length + 1 });
   };
 
   const handleEdit = (t: TrainingType) => {
     setEditingId(t.id);
-    setForm({ name: t.name, duration: t.duration, color: t.color || '#7C3AED' });
+    setForm({ 
+      name: t.name, 
+      duration: t.duration, 
+      color: t.color || '#7C3AED',
+      order: t.order
+    });
   };
 
   const handleCancel = () => {
     setEditingId(null);
-    setForm({ name: '', duration: 60, color: '#7C3AED' });
+    setForm({ name: '', duration: 60, color: '#7C3AED', order: trainingTypes.length + 1 });
   };
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     
     if (over && active.id !== over.id) {
-      // Sort the array by order first to ensure visual and logic match before moving
-      const sortedTypes = [...trainingTypes].sort((a,b) => a.order - b.order);
+      const sortedTypes = [...trainingTypes].sort((a,b) => {
+        if (a.order !== b.order) return a.order - b.order;
+        return a.name.localeCompare(b.name);
+      });
       const oldIndex = sortedTypes.findIndex((t) => t.id === active.id);
       const newIndex = sortedTypes.findIndex((t) => t.id === over.id);
       
       const moved = arrayMove(sortedTypes, oldIndex, newIndex);
-      // Re-assign order based on array position
-      const reordered = moved.map((t, idx) => ({ ...t, order: idx + 1 }));
+      
+      // Recalculate orders smartly: preserve shared orders if items are still adjacent
+      let currentOrder = 1;
+      let prevOldOrder: number | null = null;
+      
+      const reordered = moved.map((t, idx) => {
+        if (idx === 0) {
+          prevOldOrder = t.order;
+          return { ...t, order: currentOrder };
+        }
+        
+        if (t.order === prevOldOrder) {
+          // Stay in the same tier if adjacent to a same-tier item
+          return { ...t, order: currentOrder };
+        } else {
+          // Move to the next tier
+          currentOrder++;
+          prevOldOrder = t.order;
+          return { ...t, order: currentOrder };
+        }
+      });
+      
       setTrainingTypes(reordered);
     }
   }
 
-  // To display them we sort by order so the drag matches
-  const sortedTypes = [...trainingTypes].sort((a,b) => a.order - b.order);
+  const sortedTypes = [...trainingTypes].sort((a,b) => {
+    if (a.order !== b.order) return a.order - b.order;
+    return a.name.localeCompare(b.name);
+  });
 
   return (
     <Card>
@@ -153,6 +186,10 @@ export default function TrainingTypeManager() {
           <div className="flex-1 space-y-2">
             <Label>Tên loại bài</Label>
             <Input value={form.name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({...form, name: e.target.value})} placeholder="VD: Onboarding" />
+          </div>
+          <div className="w-24 space-y-2">
+            <Label>Thứ tự</Label>
+            <Input type="number" min="1" value={form.order} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({...form, order: e.target.value === '' ? '' : Number(e.target.value)})} />
           </div>
           <div className="w-full sm:w-32 space-y-2">
             <Label>Thời lượng (phút)</Label>

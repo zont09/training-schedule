@@ -137,11 +137,15 @@ export function runScheduler(
   // C7: max concurrent sessions from config (fallback to unlimited if not set)
   const maxConcurrent = weekConfig.maxConcurrentSessions ?? Infinity;
 
-  // NEW: per-trainee minimum date for next session — ensures type-order is reflected in dates
-  // After scheduling a session for trainee in type order k, their next session (order k+1)
-  // must be on a date strictly AFTER this one.
-  const traineeMinNextDate = new Map<string, string>();
-  trainees.forEach((t) => traineeMinNextDate.set(t.id, ''));
+  // NEW: tier-based date bounds to respect global TrainingType.order 
+  // AND type-based bounds to respect RequiredSession.order.
+  const traineeTierMinDate = new Map<string, string>();
+  trainees.forEach((t) => traineeTierMinDate.set(t.id, ''));
+
+  const traineeTypeMinDate = new Map<string, Map<string, string>>();
+  trainees.forEach((t) => traineeTypeMinDate.set(t.id, new Map()));
+
+  const traineeCurrentTierMaxDate = new Map<string, string>();
 
   /** Count how many already-scheduled sessions overlap with [start, end] on this date (C7) */
   function countConcurrent(date: string, start: number, end: number): number {
@@ -155,80 +159,110 @@ export function runScheduler(
     bookedIntervals.set(date, intervals);
   }
 
-  // ── Process training types in order (topological layering) ─────────────────
-  const sortedTypes = [...trainingTypes].sort((a, b) => a.order - b.order);
+  // ── Process grouping by TrainingType.order tiers ──────────────────────────────
+  // Tiers group TrainingTypes that have the same order, so they can be scheduled independently
+  const sortedTiers = Array.from(new Set(trainingTypes.map((t) => t.order))).sort((a, b) => a - b);
 
-  for (const tType of sortedTypes) {
-    // Collect pending units grouped by order (layer)
-    const pendingByOrder = new Map<number, string[]>(); // order → traineeIds
+  for (const tierOrder of sortedTiers) {
+    const typesInTier = trainingTypes.filter((t) => t.order === tierOrder);
 
-    for (const trainee of trainees) {
-      const relevant = trainee.requiredSessions
-        .filter((s) => s.trainingTypeId === tType.id)
-        .sort((a, b) => a.order - b.order);
+    // Track the max date scheduled in this tier to become the min date for the next tier
+    trainees.forEach((t) => traineeCurrentTierMaxDate.set(t.id, traineeTierMinDate.get(t.id) ?? ''));
 
-      const next = relevant.find((s) => !s.completed);
-      if (!next) continue;
+    let tierCompleted = false;
+    const scheduledInThisTier = new Set<string>(); // "traineeId|typeId|order"
 
-      // C1: All previous orders must be completed
-      const prevDone = relevant.filter((s) => s.order < next.order).every((s) => s.completed);
-      if (!prevDone) continue;
+    while (!tierCompleted) {
+      tierCompleted = true;
+      const pendingUnits = new Map<string, string[]>(); // key: "typeId|reqOrder"
 
-      const list = pendingByOrder.get(next.order) ?? [];
-      list.push(trainee.id);
-      pendingByOrder.set(next.order, list);
-    }
+      for (const trainee of trainees) {
+        for (const tType of typesInTier) {
+          const relevant = trainee.requiredSessions
+            .filter((s) => s.trainingTypeId === tType.id)
+            .sort((a, b) => a.order - b.order);
 
-    const orders = [...pendingByOrder.keys()].sort((a, b) => a - b);
+          const next = relevant.find(
+            (s) => !s.completed && !scheduledInThisTier.has(`${trainee.id}|${tType.id}|${s.order}`)
+          );
+          if (!next) continue;
 
-    for (const order of orders) {
-      const ids = pendingByOrder.get(order)!;
+          // Ensure all previous orders of THIS training type are scheduled/completed
+          const prevDone = relevant
+            .filter((s) => s.order < next.order)
+            .every((s) => s.completed || scheduledInThisTier.has(`${trainee.id}|${tType.id}|${s.order}`));
+          if (!prevDone) continue;
 
-      // Sort by least free time first (hardest-to-schedule → pivot)
-      const sorted = [...ids].sort((a, b) => {
-        const ta = trainees.find((t) => t.id === a)!;
-        const tb = trainees.find((t) => t.id === b)!;
-        return totalFreeMinutes(ta) - totalFreeMinutes(tb);
-      });
-
-      // ── Greedy group formation ────────────────────────────────────────────
-      const remaining = [...sorted];
-      const groups: Group[] = [];
-
-      while (remaining.length > 0) {
-        const pivot = remaining.shift()!;
-        const group: string[] = [pivot];
-
-        for (let i = 0; i < remaining.length && group.length < 4; ) {
-          group.push(remaining[i]);
-          remaining.splice(i, 1);
-          // (We'll validate shared availability during slot assignment)
+          const key = `${tType.id}|${next.order}`;
+          const list = pendingUnits.get(key) ?? [];
+          list.push(trainee.id);
+          pendingUnits.set(key, list);
+          tierCompleted = false; // found something to schedule
         }
-
-        groups.push({ trainees: group, trainingTypeId: tType.id, order });
       }
 
-      // ── Slot assignment (EDF-style) ────────────────────────────────────────
-      for (const group of groups) {
+      if (tierCompleted) break;
+
+      // Group trainees needing the same (typeId, reqOrder)
+      const currentIterGroups: Group[] = [];
+      for (const [key, ids] of pendingUnits.entries()) {
+        const [typeId, orderStr] = key.split('|');
+        const order = parseInt(orderStr, 10);
+
+        // Sort by least free time first (hardest-to-schedule → pivot)
+        const sorted = [...ids].sort((a, b) => {
+          const ta = trainees.find((t) => t.id === a)!;
+          const tb = trainees.find((t) => t.id === b)!;
+          return totalFreeMinutes(ta) - totalFreeMinutes(tb);
+        });
+
+        const remaining = [...sorted];
+        while (remaining.length > 0) {
+          const pivot = remaining.shift()!;
+          const group: string[] = [pivot];
+
+          for (let i = 0; i < remaining.length && group.length < 4; ) {
+            group.push(remaining[i]);
+            remaining.splice(i, 1);
+          }
+
+          currentIterGroups.push({ trainees: group, trainingTypeId: typeId, order });
+        }
+      }
+
+      // Sort ALL groups in this iteration by scarcity to optimize assignment
+      currentIterGroups.sort((a, b) => {
+        if (a.trainees.length !== b.trainees.length) return b.trainees.length - a.trainees.length;
+        const freeA = a.trainees.reduce((sum, tid) => sum + totalFreeMinutes(trainees.find((t) => t.id === tid)!), 0);
+        const freeB = b.trainees.reduce((sum, tid) => sum + totalFreeMinutes(trainees.find((t) => t.id === tid)!), 0);
+        return freeA - freeB;
+      });
+
+      // ── Slot assignment ────────────────────────────────────────────
+      for (const group of currentIterGroups) {
+        const tType = trainingTypes.find((t) => t.id === group.trainingTypeId)!;
         let assigned = false;
 
         outer: for (const day of timeline) {
-          // C2: No trainee in this group can have an existing session today
-          if (group.trainees.some((tid) => takenDates.get(tid)?.has(day.date))) continue;
+          // C2 & Minimum Sequence Date Check
+          if (
+            group.trainees.some((tid) => {
+              if (takenDates.get(tid)?.has(day.date)) return true;
+              const minTier = traineeTierMinDate.get(tid) ?? '';
+              if (minTier !== '' && day.date < minTier) return true;
+              const minType = traineeTypeMinDate.get(tid)?.get(tType.id) ?? '';
+              if (minType !== '' && day.date <= minType) return true;
+              return false;
+            })
+          ) {
+            continue;
+          }
 
-          // DATE ORDER: This day must be AFTER the last scheduled day for all trainees in group
-          if (group.trainees.some((tid) => {
-            const minDate = traineeMinNextDate.get(tid) ?? '';
-            return minDate !== '' && day.date <= minDate;
-          })) continue;
-
-          // Collect ALL valid candidate slots in this day, then pick the best one
           const candidates: { sessionStart: number; sessionEnd: number; concurrent: number }[] = [];
 
           for (const slot of day.slots) {
             const slotStart = timeToMins(slot.start);
             const slotEnd = timeToMins(slot.end);
-            // C3: session must fit inside this slot
             if (slotEnd - slotStart < tType.duration) continue;
 
             const step = 30;
@@ -236,14 +270,12 @@ export function runScheduler(
               const sessionStart = t;
               const sessionEnd = t + tType.duration;
 
-              // C5: All trainees must be free
               const allFree = group.trainees.every((tid) => {
                 const trainee = trainees.find((tr) => tr.id === tid)!;
                 return isFreeAt(trainee, day.dayOfWeek, sessionStart, sessionEnd);
               });
               if (!allFree) continue;
 
-              // C7: concurrent limit (C6 removed — overlap is now allowed up to maxConcurrent)
               const concurrent = countConcurrent(day.date, sessionStart, sessionEnd);
               if (concurrent >= maxConcurrent) continue;
 
@@ -253,8 +285,6 @@ export function runScheduler(
 
           if (candidates.length === 0) continue;
 
-          // Prefer slots with MORE existing overlap (minimizes total wall-clock time)
-          // Tiebreak: earlier start time
           candidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
           const best = candidates[0];
 
@@ -265,15 +295,20 @@ export function runScheduler(
             startTime: minsToTime(best.sessionStart),
             endTime: minsToTime(best.sessionEnd),
             trainingTypeId: tType.id,
-            trainingOrder: order,
+            trainingOrder: group.order,
             traineeIds: [...group.trainees],
             status: 'scheduled',
           });
 
           group.trainees.forEach((tid) => {
             takenDates.get(tid)!.add(day.date);
-            const current = traineeMinNextDate.get(tid) ?? '';
-            if (day.date >= current) traineeMinNextDate.set(tid, day.date);
+            traineeTypeMinDate.get(tid)!.set(tType.id, day.date);
+            scheduledInThisTier.add(`${tid}|${tType.id}|${group.order}`);
+
+            const currMax = traineeCurrentTierMaxDate.get(tid) ?? '';
+            if (day.date > currMax) {
+              traineeCurrentTierMaxDate.set(tid, day.date);
+            }
           });
           bookInterval(day.date, best.sessionStart, best.sessionEnd);
           assigned = true;
@@ -281,17 +316,17 @@ export function runScheduler(
         }
 
         if (!assigned) {
-          // Try to split group into solo sessions
+          // Fallback: Try to split group into solo sessions
           for (const tid of group.trainees) {
             let soloAssigned = false;
 
             soloOuter: for (const day of timeline) {
               if (takenDates.get(tid)?.has(day.date)) continue;
+              const minTier = traineeTierMinDate.get(tid) ?? '';
+              if (minTier !== '' && day.date < minTier) continue;
+              const minType = traineeTypeMinDate.get(tid)?.get(tType.id) ?? '';
+              if (minType !== '' && day.date <= minType) continue;
 
-              const minDate = traineeMinNextDate.get(tid) ?? '';
-              if (minDate !== '' && day.date <= minDate) continue;
-
-              // Collect valid candidates for this day
               const soloCandidates: { sessionStart: number; sessionEnd: number; concurrent: number }[] = [];
 
               for (const slot of day.slots) {
@@ -307,7 +342,6 @@ export function runScheduler(
                   const trainee = trainees.find((tr) => tr.id === tid)!;
                   if (!isFreeAt(trainee, day.dayOfWeek, sessionStart, sessionEnd)) continue;
 
-                  // C7: concurrent limit (C6 removed)
                   const concurrent = countConcurrent(day.date, sessionStart, sessionEnd);
                   if (concurrent >= maxConcurrent) continue;
 
@@ -317,7 +351,6 @@ export function runScheduler(
 
               if (soloCandidates.length === 0) continue;
 
-              // Prefer overlap-first to minimize total wall-clock time
               soloCandidates.sort((a, b) => b.concurrent - a.concurrent || a.sessionStart - b.sessionStart);
               const best = soloCandidates[0];
 
@@ -327,14 +360,19 @@ export function runScheduler(
                 startTime: minsToTime(best.sessionStart),
                 endTime: minsToTime(best.sessionEnd),
                 trainingTypeId: tType.id,
-                trainingOrder: order,
+                trainingOrder: group.order,
                 traineeIds: [tid],
                 status: 'scheduled',
               });
 
               takenDates.get(tid)!.add(day.date);
-              const current = traineeMinNextDate.get(tid) ?? '';
-              if (day.date >= current) traineeMinNextDate.set(tid, day.date);
+              traineeTypeMinDate.get(tid)!.set(tType.id, day.date);
+              scheduledInThisTier.add(`${tid}|${tType.id}|${group.order}`);
+
+              const currMax = traineeCurrentTierMaxDate.get(tid) ?? '';
+              if (day.date > currMax) {
+                traineeCurrentTierMaxDate.set(tid, day.date);
+              }
               bookInterval(day.date, best.sessionStart, best.sessionEnd);
               soloAssigned = true;
               break soloOuter;
@@ -344,14 +382,21 @@ export function runScheduler(
               unscheduled.push({
                 traineeId: tid,
                 trainingTypeId: tType.id,
-                order,
+                order: group.order,
                 reason: 'no_slot',
               });
+              // To prevent infinite loop since we can't schedule it
+              scheduledInThisTier.add(`${tid}|${tType.id}|${group.order}`);
             }
           }
         }
       }
     }
+
+    // Advance tier min date for next tiers
+    trainees.forEach((t) => {
+      traineeTierMinDate.set(t.id, traineeCurrentTierMaxDate.get(t.id) ?? '');
+    });
   }
 
   // ── Stats ───────────────────────────────────────────────────────────────────
